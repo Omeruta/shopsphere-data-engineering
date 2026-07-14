@@ -15,6 +15,7 @@ from typing import Any
 
 import pandas as pd
 from minio import Minio
+from minio.error import S3Error
 
 from shopsphere_pipelines.config import get_minio_config
 
@@ -43,6 +44,24 @@ def build_object_path(layer: str, system: str, dataset: str, run_date: date, fil
     """
     dt_str = run_date.isoformat()
     return f"{layer}/{system}/{dataset}/dt={dt_str}/{filename}"
+
+
+def object_exists(object_path: str) -> bool:
+    """
+    Checks whether an object exists without downloading it. Used by
+    run_pipeline.py to skip a load step cleanly when an incremental
+    extract found no new/changed rows and therefore never wrote a
+    bronze object for today's run_date.
+    """
+    cfg = get_minio_config()
+    client = get_minio_client()
+    try:
+        client.stat_object(cfg.bucket, object_path)
+        return True
+    except S3Error as exc:
+        if exc.code == "NoSuchKey":
+            return False
+        raise
 
 
 def write_parquet(df: pd.DataFrame, object_path: str) -> None:
@@ -86,9 +105,6 @@ def write_jsonl(records: list[dict[str, Any]], object_path: str) -> None:
 
     buffer = io.BytesIO()
     for record in records:
-        # default=str covers values json.dumps cannot natively serialize,
-        # e.g. Python datetime objects, so callers do not need to
-        # pre-convert every field by hand before calling this function.
         line = json.dumps(record, default=str) + "\n"
         buffer.write(line.encode("utf-8"))
     buffer.seek(0)
